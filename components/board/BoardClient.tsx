@@ -21,6 +21,7 @@ interface Card {
   board_id: string
   position: number
   is_complete?: boolean | null
+  user_id?: string
 }
 
 interface CardActivity {
@@ -101,6 +102,30 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
     }
   }
 
+  const recordCardActivity = async (
+    cardId: string, 
+    actionType: string, 
+    description: string, 
+    details?: string
+  ) => {
+    try {
+      const { error } = await supabase
+        .from('card_activities')
+        .insert([{
+          card_id: cardId,
+          action_type: actionType,
+          description,
+          details,
+          created_by: currentUserId,
+          user_id: currentUserId
+        }])
+
+      if (error) throw error
+    } catch (err) {
+      console.error('Error recording card activity', err)
+    }
+  }
+
   const createCard = async (listId: string) => {
     if (!newCardTitle.trim()) {
       setActiveListForCard(null)
@@ -116,6 +141,7 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
       if (fetchErr) throw fetchErr
 
       const nextPos = (existingCards && existingCards.length) ? Math.max(...existingCards.map((c: any) => c.position ?? 0)) + 1 : 0
+      const listTitle = lists.find(list => list.id === listId)?.title || 'Unknown List'
 
       const { data: card, error } = await supabase
         .from('cards')
@@ -124,14 +150,25 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
           list_id: listId,
           board_id: board.id,
           position: nextPos,
-          is_complete: false
+          is_complete: false,
+          user_id: currentUserId
         }])
         .select()
         .single()
       if (error) throw error
+      
       setCards(prev => [...prev, card])
       setNewCardTitle('')
       setActiveListForCard(null)
+
+      // Record card creation activity
+      await recordCardActivity(
+        card.id,
+        'card_created',
+        `Card created in list "${listTitle}"`,
+        `Card "${newCardTitle.trim()}" was created in list "${listTitle}" at position ${nextPos + 1}.`
+      )
+
     } catch (err) {
       console.error('Error creating card', err)
       alert('Failed to create card')
@@ -179,6 +216,8 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
     if (type === 'card') {
       const sourceListId = source.droppableId
       const destListId = destination.droppableId
+      const sourceListTitle = lists.find(list => list.id === sourceListId)?.title || 'Unknown List'
+      const destListTitle = lists.find(list => list.id === destListId)?.title || 'Unknown List'
 
       if (sourceListId === destListId) {
         // Same list reordering
@@ -207,6 +246,15 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
               .update({ position: card.position })
               .eq('id', card.id)
           }
+
+          // Record movement activity for same list
+          await recordCardActivity(
+            movedCard.id,
+            'card_moved',
+            `Card moved within list "${sourceListTitle}"`,
+            `Card was moved from position ${source.index + 1} to position ${destination.index + 1} in list "${sourceListTitle}".`
+          )
+
         } catch (err) {
           console.error('Error updating card positions', err)
         }
@@ -247,6 +295,15 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
               })
               .eq('id', card.id)
           }
+
+          // Record movement activity for between lists
+          await recordCardActivity(
+            movedCard.id,
+            'card_moved',
+            `Card moved from list "${sourceListTitle}" to list "${destListTitle}"`,
+            `Card was moved from position ${source.index + 1} in list "${sourceListTitle}" to position ${destination.index + 1} in list "${destListTitle}".`
+          )
+
         } catch (err) {
           console.error('Error updating card positions', err)
         }
@@ -265,7 +322,33 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
         .order('created_at', { ascending: false })
 
       if (error) throw error
-      const activities = data || []
+      
+      // Filter out old generic activities when we have new detailed ones
+      const activities = (data || []).filter((activity, index, array) => {
+        const activityTime = new Date(activity.created_at).getTime()
+        
+        // If this is an old generic activity (created, moved without details)
+        if ((activity.action_type === 'created' || activity.action_type === 'moved') && 
+            (!activity.details || activity.details === 'No additional details were provided.')) {
+          
+          // Check if there's a corresponding new detailed activity around the same time (±2 seconds)
+          const hasDetailedVersion = array.some(a => {
+            const otherTime = new Date(a.created_at).getTime()
+            const timeDiff = Math.abs(activityTime - otherTime)
+            
+            return (
+              timeDiff < 2000 && // Within 2 seconds
+              ((activity.action_type === 'created' && a.action_type === 'card_created') ||
+               (activity.action_type === 'moved' && a.action_type === 'card_moved'))
+            )
+          })
+          
+          // If there's a detailed version, filter out this generic one
+          return !hasDetailedVersion
+        }
+        
+        return true
+      })
 
       const userIds = Array.from(
         new Set(
@@ -350,6 +433,7 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
           card_id: card.id,
           action_type: actionType,
           description: `Card ${nextStatus ? 'marked as complete' : 'marked as incomplete'}`,
+          details: `Card was ${nextStatus ? 'completed' : 'marked as incomplete'} by user.`,
           created_by: currentUserId,
           user_id: currentUserId
         }])
@@ -378,13 +462,7 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
   const renderActivityDetails = (activity: CardActivity) => {
     if (activity.details) return activity.details
     if (activity.description) return activity.description
-    if (activity.metadata) return JSON.stringify(activity.metadata)
     return 'No additional details were provided.'
-  }
-
-  const renderMetadata = (activity: CardActivity) => {
-    if (!activity.metadata) return null
-    return JSON.stringify(activity.metadata, null, 2)
   }
 
   const formatActivityTimestamp = (timestamp: string) => {
@@ -697,11 +775,6 @@ export default function BoardClient({ board, lists: initialLists, cards: initial
                           <p className="text-sm text-gray-800">
                             {renderActivityDetails(activity)}
                           </p>
-                          {activity.metadata && (
-                            <pre className="text-xs text-gray-600 bg-white border border-gray-200 rounded-md p-2 overflow-x-auto">
-                              {renderMetadata(activity)}
-                            </pre>
-                          )}
                         </div>
                         <div className="text-xs text-gray-500 flex items-center justify-between pt-1 border-t border-gray-100">
                           <span>
