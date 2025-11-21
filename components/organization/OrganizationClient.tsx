@@ -325,14 +325,15 @@ export default function OrganizationClient({
 
             {/* Quick Actions */}
             {canManage && (
-              <div className="bg-white border border-gray-200 rounded-lg p-6">
-                <h3 className="font-semibold text-gray-900 mb-4">Quick Actions</h3>
+              <div>
+              {/* <div className="bg-white border border-gray-200 rounded-lg p-6"> */}
+                {/* <h3 className="font-semibold text-gray-900 mb-4">Quick Actions</h3>
                 <div className="space-y-2">
                   <button className="w-full text-left px-3 py-2 hover:bg-gray-50 rounded-lg transition-colors text-sm">
                     <Settings className="w-4 h-4 inline mr-2" />
                     Organization Settings
                   </button>
-                </div>
+                </div> */}
               </div>
             )}
           </div>
